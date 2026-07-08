@@ -6,13 +6,11 @@ void main() {
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'BMI Calculator',
+      title: 'bmi Calculator',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(primarySwatch: Colors.blue),
       home: const BmiHomePage(),
     );
   }
@@ -55,17 +53,15 @@ class _BmiHomePageState extends State<BmiHomePage> {
     if (_formKey.currentState!.validate()) {
       double heightCm = double.parse(heightController.text);
       double weightKg = double.parse(weightController.text);
+    double heightM = heightCm / 100;
+    double bmi = weightKg / (heightM * heightM);
 
-      
-      double heightM = heightCm / 100;
-      double bmi = weightKg / (heightM * heightM);
-
-      Navigator.push(
+    Navigator.push(
         context,
-        MaterialPageRoute(
-          builder: (context) => ResultPage(
-            bmi: bmi,
-            gender: gender,
+              MaterialPageRoute(
+        builder: (context) => ResultPage(
+          bmi: bmi,
+      gender: gender,
           ),
         ),
       );
@@ -86,6 +82,7 @@ class _BmiHomePageState extends State<BmiHomePage> {
               const Text(
                 'Select Gender',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                
               ),
               Row(
                 children: [
@@ -155,10 +152,8 @@ class _BmiHomePageState extends State<BmiHomePage> {
 class ResultPage extends StatelessWidget {
   final double bmi;
   final String gender;
-
   const ResultPage({super.key, required this.bmi, required this.gender});
 
-  // Determine category and color based on BMI value
   String get category {
     if (bmi < 25) {
       return 'Good Weight';

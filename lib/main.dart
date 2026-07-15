@@ -1,18 +1,20 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:hive/hive.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:http/http.dart' as http;
 import 'firebase_options.dart';
 
 class AppColors {
   static const bg = Color(0xFF141414);
   static const card = Color.fromARGB(255, 31, 31, 31);
   static const cardAlt = Color(0xFF262626);
-  static const accent = Color.fromARGB(255, 77, 240, 255); // lime
-  static const accentDim = Color.fromARGB(255, 32, 40, 68); // dark olive (unselected fill)
+  static const accent = Color.fromARGB(255, 77, 240, 255);
+  static const accentDim = Color.fromARGB(255, 32, 40, 68); 
   static const textPrimary = Colors.white;
   static const textSecondary = Color(0xFF9C9C9C);
 }
@@ -35,6 +37,7 @@ class MyApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => BmiProvider()),
         ChangeNotifierProvider(create: (_) => AuthProvider()),
+        ChangeNotifierProvider(create: (_) => MealPlanProvider()),
       ],
       child: MaterialApp(
         title: 'BMI Calculator',
@@ -70,8 +73,6 @@ class MyApp extends StatelessWidget {
   }
 }
 
-// ---------------- SPLASH ----------------
-
 class SplashController extends StatefulWidget {
   const SplashController({super.key});
 
@@ -104,46 +105,52 @@ class SplashScreen extends StatelessWidget {
     return Scaffold(
       backgroundColor: AppColors.bg,
       body: SafeArea(
-        child: Column(
-          children: [
-            const Spacer(flex: 3),
-            Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: AppColors.accent,
-                borderRadius: BorderRadius.circular(18),
+        child: SizedBox(
+          width: double.infinity, // <-- forces full width
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center, // <-- also center vertically-ish
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              const Spacer(flex: 3),
+              Container(
+                width: 72,
+                height: 72,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: AppColors.accent,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: const Icon(Icons.hourglass_bottom_rounded,
+                    color: AppColors.bg, size: 36),
               ),
-              child: const Icon(Icons.hourglass_bottom_rounded,
-                  color: AppColors.bg, size: 36),
-            ),
-            const SizedBox(height: 20),
-            const Text(
-              'BMI Calculator',
-              style: TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: 22,
-                fontWeight: FontWeight.w600,
+              const SizedBox(height: 20),
+              const Text(
+                'BMI Calculator',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-            ),
-            const Spacer(flex: 4),
-            const SizedBox(
-              width: 22,
-              height: 22,
-              child: CircularProgressIndicator(
-                strokeWidth: 2.5,
-                color: AppColors.accent,
+              const Spacer(flex: 4),
+              const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  color: AppColors.accent,
+                ),
               ),
-            ),
-            const SizedBox(height: 40),
-          ],
+              const SizedBox(height: 40),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-// Reactively shows Login or the app's RootNav based on Firebase auth state.
+
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
 
@@ -266,6 +273,191 @@ class BmiProvider extends ChangeNotifier {
   void setAge(int a) {
     age = a.clamp(1, 120);
     notifyListeners();
+  }
+}
+
+// ---------------- CALORIE CALCULATION ----------------
+//
+// Three small, pure functions: BMI -> BMR -> TDEE -> target calories.
+// Kept as top-level functions (not methods) so they're easy to unit-test
+// on their own later if you want to.
+
+/// Basal Metabolic Rate via the Mifflin-St Jeor equation — the calories
+/// your body burns at complete rest.
+double calculateBMR({
+  required double weightKg,
+  required double heightCm,
+  required int age,
+  required String gender,
+}) {
+  final base = 10 * weightKg + 6.25 * heightCm - 5 * age;
+  return gender == 'Male' ? base + 5 : base - 161;
+}
+
+/// Total Daily Energy Expenditure = BMR x an activity multiplier.
+/// The app doesn't currently ask the user how active they are, so this
+/// defaults to "lightly active" (1.375). Swap this for a user-selected
+/// multiplier later if you add an activity-level question.
+double calculateTDEE(double bmr) {
+  const activityMultiplier = 1.375;
+  return bmr * activityMultiplier;
+}
+
+/// Turns TDEE + BMI category into a daily calorie target:
+/// - BMI < 18.5  -> surplus, to gain weight
+/// - BMI < 25.0  -> maintenance, normal diet
+/// - BMI >= 25.0 -> deficit, to lose weight (never below a safe 1200 floor)
+double calculateTargetCalories({
+  required double bmi,
+  required double tdee,
+}) {
+  if (bmi < 18.5) {
+    return tdee + 500;
+  } else if (bmi < 25.0) {
+    return tdee;
+  } else {
+    final target = tdee - 500;
+    return target < 1200 ? 1200 : target;
+  }
+}
+
+// ---------------- MEAL PLAN (SPOONACULAR) ----------------
+
+class MealPlanMeal {
+  final int id;
+  final String title;
+  final String imageUrl;
+  final int readyInMinutes;
+  final int servings;
+  final String sourceUrl;
+
+  MealPlanMeal({
+    required this.id,
+    required this.title,
+    required this.imageUrl,
+    required this.readyInMinutes,
+    required this.servings,
+    required this.sourceUrl,
+  });
+
+  factory MealPlanMeal.fromJson(Map<String, dynamic> json) {
+    final id = json['id'] as int;
+    final imageType = json['imageType'] as String? ?? 'jpg';
+    return MealPlanMeal(
+      id: id,
+      title: json['title'] as String? ?? 'Untitled recipe',
+      imageUrl: 'https://spoonacular.com/recipeImages/$id-312x231.$imageType',
+      readyInMinutes: json['readyInMinutes'] as int? ?? 0,
+      servings: json['servings'] as int? ?? 1,
+      sourceUrl: json['sourceUrl'] as String? ?? '',
+    );
+  }
+}
+
+class MealPlanNutrients {
+  final double calories;
+  final double protein;
+  final double fat;
+  final double carbohydrates;
+
+  MealPlanNutrients({
+    required this.calories,
+    required this.protein,
+    required this.fat,
+    required this.carbohydrates,
+  });
+
+  factory MealPlanNutrients.fromJson(Map<String, dynamic> json) {
+    return MealPlanNutrients(
+      calories: (json['calories'] as num?)?.toDouble() ?? 0,
+      protein: (json['protein'] as num?)?.toDouble() ?? 0,
+      fat: (json['fat'] as num?)?.toDouble() ?? 0,
+      carbohydrates: (json['carbohydrates'] as num?)?.toDouble() ?? 0,
+    );
+  }
+}
+
+class DailyMealPlan {
+  final List<MealPlanMeal> meals;
+  final MealPlanNutrients nutrients;
+
+  DailyMealPlan({required this.meals, required this.nutrients});
+
+  factory DailyMealPlan.fromJson(Map<String, dynamic> json) {
+    final mealsJson = json['meals'] as List<dynamic>? ?? [];
+    return DailyMealPlan(
+      meals: mealsJson
+          .map((m) => MealPlanMeal.fromJson(m as Map<String, dynamic>))
+          .toList(),
+      nutrients: MealPlanNutrients.fromJson(
+          json['nutrients'] as Map<String, dynamic>? ?? {}),
+    );
+  }
+}
+
+class MealPlanService {
+  // TODO: paste your own Spoonacular API key here.
+  // Get a free one at https://spoonacular.com/food-api (Sign Up -> Profile -> API Key).
+  // NOTE: shipping a key like this directly in client code is fine for a
+  // student/learning project, but not for a production app — for that
+  // you'd proxy this call through your own backend so the key never
+  // ships inside the APK.
+  static const String _apiKey = '425edd131a2d45deb8015964f0f274b0';
+
+  static Future<DailyMealPlan> fetchDailyMealPlan(double targetCalories) async {
+    final uri = Uri.https('api.spoonacular.com', '/mealplanner/generate', {
+      'timeFrame': 'day',
+      'targetCalories': targetCalories.round().toString(),
+      'apiKey': _apiKey,
+    });
+
+    final response = await http.get(uri);
+
+    if (response.statusCode != 200) {
+      throw Exception('Spoonacular request failed (${response.statusCode})');
+    }
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    return DailyMealPlan.fromJson(data);
+  }
+}
+
+class MealPlanProvider extends ChangeNotifier {
+  bool isLoading = false;
+  String? errorMessage;
+  DailyMealPlan? plan;
+  double? targetCalories;
+
+  /// Runs the full pipeline: BMR -> TDEE -> target calories -> API call.
+  Future<void> generateForBmi({
+    required double bmi,
+    required double weightKg,
+    required double heightCm,
+    required int age,
+    required String gender,
+  }) async {
+    isLoading = true;
+    errorMessage = null;
+    notifyListeners();
+
+    try {
+      final bmr = calculateBMR(
+        weightKg: weightKg,
+        heightCm: heightCm,
+        age: age,
+        gender: gender,
+      );
+      final tdee = calculateTDEE(bmr);
+      targetCalories = calculateTargetCalories(bmi: bmi, tdee: tdee);
+
+      plan = await MealPlanService.fetchDailyMealPlan(targetCalories!);
+    } catch (e) {
+      errorMessage = 'Could not load a meal plan right now.';
+      plan = null;
+    } finally {
+      isLoading = false;
+      notifyListeners();
+    }
   }
 }
 
@@ -841,8 +1033,19 @@ class BmiHomePage extends StatelessWidget {
               height: 54,
               child: ElevatedButton.icon(
                 onPressed: () async {
-                  await context.read<BmiProvider>().calculateAndSave();
+                  final bmiProvider = context.read<BmiProvider>();
+                  await bmiProvider.calculateAndSave();
                   if (context.mounted) {
+                    // Kick off the meal-plan pipeline (BMR -> TDEE -> target
+                    // calories -> Spoonacular). ResultPage watches this
+                    // provider and will show its own loading/error state.
+                    context.read<MealPlanProvider>().generateForBmi(
+                          bmi: bmiProvider.bmi!,
+                          weightKg: bmiProvider.weight,
+                          heightCm: bmiProvider.height,
+                          age: bmiProvider.age,
+                          gender: bmiProvider.gender,
+                        );
                     Navigator.push(
                       context,
                       MaterialPageRoute(builder: (_) => const ResultPage()),
@@ -1059,6 +1262,7 @@ class ResultPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<BmiProvider>();
+    final mealPlanProvider = context.watch<MealPlanProvider>();
     final bmi = provider.bmi ?? 0;
     final color = categoryColor(bmi);
     // Map bmi (15-35 clamp) onto a 0-1 slider position for the gauge dot.
@@ -1186,6 +1390,64 @@ class ResultPage extends StatelessWidget {
                 ),
               ),
             ),
+
+            // ---- Suggested meal plan (Spoonacular) ----
+            const SizedBox(height: 24),
+            const Text('Suggested Meal Plan',
+                style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold)),
+            if (mealPlanProvider.targetCalories != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Target: ${mealPlanProvider.targetCalories!.round()} kcal/day',
+                style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+              ),
+            ],
+            const SizedBox(height: 12),
+            if (mealPlanProvider.isLoading)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 20),
+                  child: CircularProgressIndicator(color: AppColors.accent),
+                ),
+              )
+            else if (mealPlanProvider.errorMessage != null)
+              Text(mealPlanProvider.errorMessage!,
+                  style: const TextStyle(color: Colors.redAccent))
+            else if (mealPlanProvider.plan == null)
+              const Text('No meal plan loaded yet.',
+                  style: TextStyle(color: AppColors.textSecondary))
+            else ...[
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.cardAlt,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    _NutrientStat(
+                        label: 'Cal',
+                        value: mealPlanProvider.plan!.nutrients.calories.round().toString()),
+                    _NutrientStat(
+                        label: 'Protein',
+                        value: '${mealPlanProvider.plan!.nutrients.protein.round()}g'),
+                    _NutrientStat(
+                        label: 'Fat',
+                        value: '${mealPlanProvider.plan!.nutrients.fat.round()}g'),
+                    _NutrientStat(
+                        label: 'Carbs',
+                        value: '${mealPlanProvider.plan!.nutrients.carbohydrates.round()}g'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              ...mealPlanProvider.plan!.meals.map((meal) => _MealCard(meal: meal)),
+            ],
+
             const SizedBox(height: 20),
             SizedBox(
               height: 54,
@@ -1205,6 +1467,75 @@ class ResultPage extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _NutrientStat extends StatelessWidget {
+  final String label;
+  final String value;
+  const _NutrientStat({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(value,
+            style: const TextStyle(
+                color: AppColors.accent, fontWeight: FontWeight.bold, fontSize: 16)),
+        const SizedBox(height: 2),
+        Text(label, style: const TextStyle(color: AppColors.textSecondary, fontSize: 11)),
+      ],
+    );
+  }
+}
+
+class _MealCard extends StatelessWidget {
+  final MealPlanMeal meal;
+  const _MealCard({required this.meal});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Image.network(
+              meal.imageUrl,
+              width: 60,
+              height: 60,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Container(
+                width: 60,
+                height: 60,
+                color: AppColors.cardAlt,
+                child: const Icon(Icons.restaurant, color: AppColors.textSecondary),
+              ),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(meal.title,
+                    style: const TextStyle(
+                        color: AppColors.textPrimary, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 4),
+                Text('${meal.readyInMinutes} min · ${meal.servings} serving(s)',
+                    style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

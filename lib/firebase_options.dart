@@ -47,30 +47,28 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyAFPC_C6BJ4x8ecVnsS7_hwLDsMhcfXys8',
-    appId: '1:984799919369:web:ee45b2bfae83e4c8b8a7d8',
-    messagingSenderId: '984799919369',
-    projectId: 'bmicalculator-2ec34',
-    authDomain: 'bmicalculator-2ec34.firebaseapp.com',
-    storageBucket: 'bmicalculator-2ec34.firebasestorage.app',
-    measurementId: 'G-QXTXFD73Z7',
+    apiKey: 'AIzaSyB67yuxKe2p6b2iEFHLMhg8SZqh7NqnM_c',
+    appId: '1:915715018956:web:7c829b23e39a174f9af269',
+    messagingSenderId: '915715018956',
+    projectId: 'bmicalculator-v2',
+    authDomain: 'bmicalculator-v2.firebaseapp.com',
+    storageBucket: 'bmicalculator-v2.firebasestorage.app',
   );
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyD7mAfyJEZ0NUJw2Ow_ATYg1-J0ZKsmS7M',
-    appId: '1:984799919369:android:636aa823a22d3b67b8a7d8',
-    messagingSenderId: '984799919369',
-    projectId: 'bmicalculator-2ec34',
-    storageBucket: 'bmicalculator-2ec34.firebasestorage.app',
+    apiKey: 'AIzaSyCsKXcKY82RK2AyKOAjq3RE-6fpN7TP7cs',
+    appId: '1:915715018956:android:72473844c814bb509af269',
+    messagingSenderId: '915715018956',
+    projectId: 'bmicalculator-v2',
+    storageBucket: 'bmicalculator-v2.firebasestorage.app',
   );
 
   static const FirebaseOptions windows = FirebaseOptions(
-    apiKey: 'AIzaSyAFPC_C6BJ4x8ecVnsS7_hwLDsMhcfXys8',
-    appId: '1:984799919369:web:cbf4c4d1513bc7c0b8a7d8',
-    messagingSenderId: '984799919369',
-    projectId: 'bmicalculator-2ec34',
-    authDomain: 'bmicalculator-2ec34.firebaseapp.com',
-    storageBucket: 'bmicalculator-2ec34.firebasestorage.app',
-    measurementId: 'G-W1DXWWFEFZ',
+    apiKey: 'AIzaSyB67yuxKe2p6b2iEFHLMhg8SZqh7NqnM_c',
+    appId: '1:915715018956:web:38482874c198c6829af269',
+    messagingSenderId: '915715018956',
+    projectId: 'bmicalculator-v2',
+    authDomain: 'bmicalculator-v2.firebaseapp.com',
+    storageBucket: 'bmicalculator-v2.firebasestorage.app',
   );
 }

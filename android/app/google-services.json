@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "984799919369",
-    "project_id": "bmicalculator-2ec34",
-    "storage_bucket": "bmicalculator-2ec34.firebasestorage.app"
+    "project_number": "915715018956",
+    "project_id": "bmicalculator-v2",
+    "storage_bucket": "bmicalculator-v2.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:984799919369:android:636aa823a22d3b67b8a7d8",
+        "mobilesdk_app_id": "1:915715018956:android:72473844c814bb509af269",
         "android_client_info": {
           "package_name": "com.example.bmicalculator"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyD7mAfyJEZ0NUJw2Ow_ATYg1-J0ZKsmS7M"
+          "current_key": "AIzaSyCsKXcKY82RK2AyKOAjq3RE-6fpN7TP7cs"
         }
       ],
       "services": {

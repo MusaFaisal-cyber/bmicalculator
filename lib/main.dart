@@ -7,20 +7,13 @@ import 'package:provider/provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:http/http.dart' as http;
 import 'firebase_options.dart';
-
-class AppColors {
-  static const bg = Color(0xFF141414);
-  static const card = Color.fromARGB(255, 31, 31, 31);
-  static const cardAlt = Color(0xFF262626);
-  static const accent = Color.fromARGB(255, 77, 240, 255);
-  static const accentDim = Color.fromARGB(255, 32, 40, 68); 
-  static const textPrimary = Colors.white;
-  static const textSecondary = Color(0xFF9C9C9C);
-}
+import 'theme.dart';
+import 'connectivity_service.dart';
 
 /// Retries a Firestore operation with exponential backoff (1s, 2s, 4s)
 /// when it fails with a transient `unavailable` error. Any other
@@ -58,11 +51,23 @@ Future<void> main() async {
     );
   }
 
-  runApp(const MyApp());
+  // Load the user's saved Light/Dark choice before the first frame so
+  // the app doesn't flash the wrong theme on startup.
+  final themeProvider = ThemeProvider();
+  await themeProvider.loadSavedTheme();
+
+  // Prime the connectivity status before the first frame so the offline
+  // banner is correct immediately, instead of assuming "online" for a beat.
+  final connectivityProvider = ConnectivityProvider();
+  await connectivityProvider.initialize();
+
+  runApp(MyApp(themeProvider: themeProvider, connectivityProvider: connectivityProvider));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final ThemeProvider themeProvider;
+  final ConnectivityProvider connectivityProvider;
+  const MyApp({super.key, required this.themeProvider, required this.connectivityProvider});
 
   @override
   Widget build(BuildContext context) {
@@ -72,36 +77,61 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => AuthProvider()),
         ChangeNotifierProvider(create: (_) => MealPlanProvider()),
         ChangeNotifierProvider(create: (_) => UserProfileProvider()),
+        ChangeNotifierProvider.value(value: themeProvider),
+        ChangeNotifierProvider.value(value: connectivityProvider),
       ],
-      child: MaterialApp(
-        title: 'BMI Calculator',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          brightness: Brightness.dark,
-          scaffoldBackgroundColor: AppColors.bg,
-          primaryColor: AppColors.accent,
-          colorScheme: const ColorScheme.dark(
-            primary: AppColors.accent,
-            surface: AppColors.card,
-          ),
-          appBarTheme: const AppBarTheme(
-            backgroundColor: AppColors.bg,
-            elevation: 0,
-            foregroundColor: AppColors.textPrimary,
-          ),
-          inputDecorationTheme: InputDecorationTheme(
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(30),
-              borderSide: BorderSide.none,
-            ),
-            filled: true,
-            fillColor: AppColors.card,
-            hintStyle: const TextStyle(color: AppColors.textSecondary),
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Consumer<ThemeProvider>(
+        builder: (context, theme, _) => MaterialApp(
+          title: 'BMI Calculator',
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.light,
+          darkTheme: AppTheme.dark,
+          themeMode: theme.themeMode,
+          home: const SplashController(),
+          // Global offline banner — sits above every screen (login, signup,
+          // splash, and the main app) without needing to thread it through
+          // each screen individually.
+          builder: (context, child) {
+            return Column(
+              children: [
+                const _OfflineBanner(),
+                Expanded(child: child ?? const SizedBox.shrink()),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+/// Persistent banner shown at the top of the app whenever the device has
+/// no network connection. Collapses to nothing when back online.
+class _OfflineBanner extends StatelessWidget {
+  const _OfflineBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final isOnline = context.watch<ConnectivityProvider>().isOnline;
+    if (isOnline) return const SizedBox.shrink();
+    return Material(
+      color: Colors.redAccent,
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: const [
+              Icon(Icons.wifi_off, color: Colors.white, size: 16),
+              SizedBox(width: 8),
+              Text(
+                'No internet connection',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+              ),
+            ],
           ),
         ),
-        home: const SplashController(),
       ),
     );
   }
@@ -137,7 +167,7 @@ class SplashScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.bg,
+      backgroundColor: context.colors.bg,
       body: SafeArea(
         child: SizedBox(
           width: double.infinity,
@@ -151,28 +181,28 @@ class SplashScreen extends StatelessWidget {
                 height: 72,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  color: AppColors.accent,
+                  color: context.colors.accent,
                   borderRadius: BorderRadius.circular(18),
                 ),
-                child: const Icon(Icons.hourglass_bottom_rounded,
-                    color: AppColors.bg, size: 36),
+                child: Icon(Icons.hourglass_bottom_rounded,
+                    color: context.colors.bg, size: 36),
               ),
               const SizedBox(height: 20),
-              const Text(
+              Text(
                 'BMI Calculator',
                 style: TextStyle(
-                  color: AppColors.textPrimary,
+                  color: context.colors.textPrimary,
                   fontSize: 22,
                   fontWeight: FontWeight.w600,
                 ),
               ),
               const Spacer(flex: 4),
-              const SizedBox(
+              SizedBox(
                 width: 22,
                 height: 22,
                 child: CircularProgressIndicator(
                   strokeWidth: 2.5,
-                  color: AppColors.accent,
+                  color: context.colors.accent,
                 ),
               ),
               const SizedBox(height: 40),
@@ -193,10 +223,10 @@ class AuthGate extends StatelessWidget {
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            backgroundColor: AppColors.bg,
+          return Scaffold(
+            backgroundColor: context.colors.bg,
             body: Center(
-              child: CircularProgressIndicator(color: AppColors.accent),
+              child: CircularProgressIndicator(color: context.colors.accent),
             ),
           );
         }
@@ -256,6 +286,7 @@ class BmiProvider extends ChangeNotifier {
   int age = 25;
   List<BmiRecord> history = [];
   bool isLoadingHistory = false;
+  String? historyError;
 
   String? _uid;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _historySub;
@@ -267,6 +298,7 @@ class BmiProvider extends ChangeNotifier {
     if (_uid == uid && _historySub != null) return;
     _uid = uid;
     isLoadingHistory = true;
+    historyError = null;
     notifyListeners();
     _historySub?.cancel();
     _historySub = _historyRef(uid)
@@ -275,13 +307,25 @@ class BmiProvider extends ChangeNotifier {
         .listen((snapshot) {
       history = snapshot.docs.map(BmiRecord.fromFirestore).toList();
       isLoadingHistory = false;
+      historyError = null;
       notifyListeners();
     }, onError: (e) {
       // ignore: avoid_print
       print('BMI history stream failed for uid=$uid: $e');
       isLoadingHistory = false;
+      historyError = 'Could not load your history. Check your connection and try again.';
       notifyListeners();
     });
+  }
+
+  /// Re-subscribes to the history stream. Used by the Retry button shown
+  /// when the initial load fails (e.g. the device was offline).
+  void retryLoadHistory() {
+    final uid = _uid;
+    if (uid == null) return;
+    _historySub?.cancel();
+    _historySub = null;
+    loadHistory(uid);
   }
 
   void clearUser() {
@@ -290,6 +334,7 @@ class BmiProvider extends ChangeNotifier {
     _uid = null;
     history = [];
     bmi = null;
+    historyError = null;
     notifyListeners();
   }
 
@@ -312,6 +357,15 @@ class BmiProvider extends ChangeNotifier {
   }
 
   Future<void> _saveHistoryRecord(String uid, BmiRecord record) async {
+    // The BMI result itself is already shown to the user by this point
+    // (calculated locally); this only persists it to history. If we're
+    // offline, skip straight past the retry/timeout dance instead of
+    // making the user wait for it to fail.
+    if (!await hasInternetConnection()) {
+      // ignore: avoid_print
+      print('Skipped BMI history save: device is offline.');
+      return;
+    }
     try {
       await withFirestoreRetry(
         () => _historyRef(uid).add(record.toMap()).timeout(const Duration(seconds: 15)),
@@ -510,17 +564,31 @@ class MealPlanProvider extends ChangeNotifier {
     errorMessage = null;
     notifyListeners();
 
-    try {
-      final bmr = calculateBMR(
-        weightKg: weightKg,
-        heightCm: heightCm,
-        age: age,
-        gender: gender,
-      );
-      final tdee = calculateTDEE(bmr);
-      targetCalories = calculateTargetCalories(bmi: bmi, tdee: tdee);
+    // BMR/TDEE/target calories are all local math, so compute them
+    // regardless of connectivity — only the recipe fetch needs the network.
+    final bmr = calculateBMR(
+      weightKg: weightKg,
+      heightCm: heightCm,
+      age: age,
+      gender: gender,
+    );
+    final tdee = calculateTDEE(bmr);
+    targetCalories = calculateTargetCalories(bmi: bmi, tdee: tdee);
 
+    if (!await hasInternetConnection()) {
+      errorMessage = 'No internet connection. Connect to the internet to load a meal plan.';
+      plan = null;
+      isLoading = false;
+      notifyListeners();
+      return;
+    }
+
+    try {
       plan = await MealPlanService.fetchDailyMealPlan(targetCalories!);
+      errorMessage = null;
+    } on TimeoutException {
+      errorMessage = 'The meal plan request timed out. Please try again.';
+      plan = null;
     } catch (e) {
       // ignore: avoid_print
       print('Meal plan generation failed: $e');
@@ -543,6 +611,14 @@ class AuthProvider extends ChangeNotifier {
     isLoading = true;
     errorMessage = null;
     notifyListeners();
+
+    if (!await hasInternetConnection()) {
+      errorMessage = 'No internet connection. Please check your network and try again.';
+      isLoading = false;
+      notifyListeners();
+      return false;
+    }
+
     try {
       await _auth
           .signInWithEmailAndPassword(email: email, password: password)
@@ -550,6 +626,11 @@ class AuthProvider extends ChangeNotifier {
       isLoading = false;
       notifyListeners();
       return true;
+    } on TimeoutException {
+      errorMessage = 'Login timed out. Please check your connection and try again.';
+      isLoading = false;
+      notifyListeners();
+      return false;
     } on FirebaseAuthException catch (e) {
       errorMessage = _mapError(e.code);
       isLoading = false;
@@ -573,11 +654,18 @@ class AuthProvider extends ChangeNotifier {
     isLoading = true;
     errorMessage = null;
     notifyListeners();
+
+    if (!await hasInternetConnection()) {
+      errorMessage = 'No internet connection. Please check your network and try again.';
+      isLoading = false;
+      notifyListeners();
+      return false;
+    }
+
     try {
-      final credential = await _auth.createUserWithEmailAndPassword(
-        email: email,
-        password: password,
-      );
+      final credential = await _auth
+          .createUserWithEmailAndPassword(email: email, password: password)
+          .timeout(const Duration(seconds: 15));
       await credential.user?.updateDisplayName(name);
 
       // Persist the profile fields FirebaseAuth doesn't natively store
@@ -585,15 +673,6 @@ class AuthProvider extends ChangeNotifier {
       // slow/stuck connection surfaces a clear error instead of leaving
       // the sign-up screen spinning forever — the auth account itself
       // is already created at this point either way.
-      //
-      // FIX: previously, if this write timed out, sign-up still returned
-      // `true` and the app moved on — but the users/{uid} doc was never
-      // created, so ProfileScreen would show "No profile data found."
-      // forever with no way to fix it from inside the app.
-      // UserProfileProvider.loadProfile() now self-heals this by
-      // auto-creating a default profile doc from the Auth account if one
-      // is missing, so this is no longer a dead end even if this write
-      // fails.
       try {
         await withFirestoreRetry(
           () => FirebaseFirestore.instance
@@ -620,6 +699,11 @@ class AuthProvider extends ChangeNotifier {
       isLoading = false;
       notifyListeners();
       return true;
+    } on TimeoutException {
+      errorMessage = 'Sign up timed out. Please check your connection and try again.';
+      isLoading = false;
+      notifyListeners();
+      return false;
     } on FirebaseAuthException catch (e) {
       errorMessage = _mapError(e.code);
       isLoading = false;
@@ -652,6 +736,8 @@ class AuthProvider extends ChangeNotifier {
         return 'An account already exists with that email.';
       case 'weak-password':
         return 'Password should be at least 6 characters.';
+      case 'network-request-failed':
+        return 'Network error. Please check your connection and try again.';
       default:
         return 'Something went wrong. Please try again.';
     }
@@ -705,23 +791,34 @@ class UserProfileProvider extends ChangeNotifier {
   DocumentReference<Map<String, dynamic>> _docRef(String uid) =>
       FirebaseFirestore.instance.collection('users').doc(uid);
 
-  /// Loads the profile doc for [uid]. If it doesn't exist yet (e.g. the
-  /// write during sign-up failed or timed out), this now auto-creates a
-  /// sensible default from the FirebaseAuth account instead of leaving
-  /// the user stuck on "No profile data found." with no way to recover.
-  ///
-  /// FIX: transient `unavailable` errors (weak wifi, cold-start network
-  /// races, a proxy/VPN blip) are now retried with backoff via
-  /// withFirestoreRetry before giving up. If every retry still fails —
-  /// meaning the device is genuinely offline — this falls back to
-  /// whatever Firestore has cached locally from a previous successful
-  /// load, so the screen doesn't dead-end on a single bad network
-  /// moment.
   Future<void> loadProfile(String uid) async {
     _uid = uid;
     isLoading = true;
     errorMessage = null;
     notifyListeners();
+
+    // If we're offline, don't even attempt the network round-trip (and its
+    // retries) — go straight for whatever's in the local Firestore cache,
+    // and if there's nothing cached, say so clearly.
+    if (!await hasInternetConnection()) {
+      try {
+        final cached = await _docRef(uid).get(const GetOptions(source: Source.cache));
+        if (cached.exists) {
+          profile = UserProfile.fromMap(cached.data()!);
+          errorMessage = null;
+          isLoading = false;
+          notifyListeners();
+          return;
+        }
+      } catch (_) {
+        // no cache available either — fall through to the error state below
+      }
+      errorMessage = 'No internet connection. Connect to the internet to load your profile.';
+      isLoading = false;
+      notifyListeners();
+      return;
+    }
+
     try {
       final doc = await withFirestoreRetry(
         () => _docRef(uid).get().timeout(const Duration(seconds: 30)),
@@ -734,7 +831,6 @@ class UserProfileProvider extends ChangeNotifier {
     } catch (e) {
       // ignore: avoid_print
       print('loadProfile failed for uid=$uid: $e');
-      // Last resort: whatever Firestore has cached locally, even if stale.
       try {
         final cached = await _docRef(uid).get(const GetOptions(source: Source.cache));
         if (cached.exists) {
@@ -754,11 +850,6 @@ class UserProfileProvider extends ChangeNotifier {
     }
   }
 
-  /// Builds a starter profile from whatever FirebaseAuth already knows
-  /// (display name / email) and writes it to Firestore so future loads
-  /// find a real document. If this write also fails (e.g. still
-  /// offline), the returned profile is still shown locally so the
-  /// screen isn't stuck — it'll just retry the write on next load.
   Future<UserProfile> _createDefaultProfile(String uid) async {
     final authUser = FirebaseAuth.instance.currentUser;
     final defaultProfile = UserProfile(
@@ -771,19 +862,20 @@ class UserProfileProvider extends ChangeNotifier {
     return defaultProfile;
   }
 
-  /// Writes the given profile to Firestore at users/{uid} and updates
-  /// local state. Based on the simpler set()-based approach — using the
-  /// same lowercase 'users' collection as the rest of the app (loadProfile,
-  /// BMI history, sign-up) so reads and writes stay in sync, and setting
-  /// isLoading = true *before* the write (not after) so the Save button's
-  /// spinner shows correctly and isLoading is always reset to false when
-  /// the write finishes or fails — otherwise the UI would look stuck.
   Future<bool> AddFireStore(UserProfile pd) async {
     final uid = _uid ?? FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return false;
     isLoading = true;
     errorMessage = null;
     notifyListeners();
+
+    if (!await hasInternetConnection()) {
+      errorMessage = "No internet connection. Your changes weren't saved — try again once you're back online.";
+      isLoading = false;
+      notifyListeners();
+      return false;
+    }
+
     try {
       await FirebaseFirestore.instance.collection('users').doc(uid).set({
         'name': pd.name,
@@ -791,11 +883,16 @@ class UserProfileProvider extends ChangeNotifier {
         'age': pd.age,
         'email': pd.email,
         'photoUrl': pd.photoUrl,
-      });
+      }).timeout(const Duration(seconds: 15));
       profile = pd;
       isLoading = false;
       notifyListeners();
       return true;
+    } on TimeoutException {
+      errorMessage = 'Saving timed out. Please check your connection and try again.';
+      isLoading = false;
+      notifyListeners();
+      return false;
     } catch (e) {
       // ignore: avoid_print
       print('AddFireStore failed for uid=$uid: $e');
@@ -850,7 +947,22 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
     return Scaffold(
-      backgroundColor: AppColors.bg,
+      backgroundColor: context.colors.bg,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        actions: [
+          Consumer<ThemeProvider>(
+            builder: (context, theme, _) => IconButton(
+              icon: Icon(
+                theme.isDarkMode ? Icons.dark_mode_outlined : Icons.light_mode_outlined,
+                color: context.colors.textSecondary,
+              ),
+              onPressed: () => context.read<ThemeProvider>().setDarkMode(!theme.isDarkMode),
+            ),
+          ),
+        ],
+      ),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -866,29 +978,28 @@ class _LoginScreenState extends State<LoginScreen> {
                     height: 64,
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
-                      color: AppColors.accent,
+                      color: context.colors.accent,
                       borderRadius: BorderRadius.circular(16),
                     ),
-                    child:
-                        const Icon(Icons.lock_outline, color: AppColors.bg, size: 30),
+                    child: Icon(Icons.lock_outline, color: context.colors.bg, size: 30),
                   ),
                   const SizedBox(height: 20),
-                  const Text(
+                  Text(
                     'Welcome Back',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                         fontSize: 26,
                         fontWeight: FontWeight.bold,
-                        color: AppColors.textPrimary),
+                        color: context.colors.textPrimary),
                   ),
                   const SizedBox(height: 32),
                   TextFormField(
                     controller: _emailController,
-                    style: const TextStyle(color: AppColors.textPrimary),
+                    style: TextStyle(color: context.colors.textPrimary),
                     keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       hintText: 'Email',
-                      prefixIcon: Icon(Icons.email_outlined, color: AppColors.textSecondary),
+                      prefixIcon: Icon(Icons.email_outlined, color: context.colors.textSecondary),
                     ),
                     validator: (value) {
                       if (value == null || value.trim().isEmpty) {
@@ -904,15 +1015,15 @@ class _LoginScreenState extends State<LoginScreen> {
                   const SizedBox(height: 16),
                   TextFormField(
                     controller: _passwordController,
-                    style: const TextStyle(color: AppColors.textPrimary),
+                    style: TextStyle(color: context.colors.textPrimary),
                     obscureText: _obscurePassword,
                     decoration: InputDecoration(
                       hintText: 'Password',
-                      prefixIcon: const Icon(Icons.lock_outline, color: AppColors.textSecondary),
+                      prefixIcon: Icon(Icons.lock_outline, color: context.colors.textSecondary),
                       suffixIcon: IconButton(
                         icon: Icon(
                             _obscurePassword ? Icons.visibility_off : Icons.visibility,
-                            color: AppColors.textSecondary),
+                            color: context.colors.textSecondary),
                         onPressed: () =>
                             setState(() => _obscurePassword = !_obscurePassword),
                       ),
@@ -929,18 +1040,10 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 28),
                   auth.isLoading
-                      ? const Center(
-                          child: CircularProgressIndicator(color: AppColors.accent))
+                      ? Center(
+                          child: CircularProgressIndicator(color: context.colors.accent))
                       : ElevatedButton(
                           onPressed: _handleLogin,
-                          style: ElevatedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            backgroundColor: AppColors.accent,
-                            foregroundColor: AppColors.bg,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(30),
-                            ),
-                          ),
                           child: const Text('Login',
                               style: TextStyle(fontWeight: FontWeight.bold)),
                         ),
@@ -951,9 +1054,9 @@ class _LoginScreenState extends State<LoginScreen> {
                         MaterialPageRoute(builder: (_) => const SignUpScreen()),
                       );
                     },
-                    child: const Text(
+                    child: Text(
                       "Don't have an account? Create Account",
-                      style: TextStyle(color: AppColors.accent),
+                      style: TextStyle(color: context.colors.accent),
                     ),
                   ),
                 ],
@@ -1018,17 +1121,30 @@ class _SignUpScreenState extends State<SignUpScreen> {
     }
   }
 
-  InputDecoration _dec(String hint, IconData icon) => InputDecoration(
+  InputDecoration _dec(BuildContext context, String hint, IconData icon) => InputDecoration(
         hintText: hint,
-        prefixIcon: Icon(icon, color: AppColors.textSecondary),
+        prefixIcon: Icon(icon, color: context.colors.textSecondary),
       );
 
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
     return Scaffold(
-      backgroundColor: AppColors.bg,
-      appBar: AppBar(title: const Text('Create Account')),
+      backgroundColor: context.colors.bg,
+      appBar: AppBar(
+        title: const Text('Create Account'),
+        actions: [
+          Consumer<ThemeProvider>(
+            builder: (context, theme, _) => IconButton(
+              icon: Icon(
+                theme.isDarkMode ? Icons.dark_mode_outlined : Icons.light_mode_outlined,
+                color: context.colors.textSecondary,
+              ),
+              onPressed: () => context.read<ThemeProvider>().setDarkMode(!theme.isDarkMode),
+            ),
+          ),
+        ],
+      ),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
@@ -1039,8 +1155,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
               children: [
                 TextFormField(
                   controller: _nameController,
-                  style: const TextStyle(color: AppColors.textPrimary),
-                  decoration: _dec('Full Name', Icons.person_outline),
+                  style: TextStyle(color: context.colors.textPrimary),
+                  decoration: _dec(context, 'Full Name', Icons.person_outline),
                   validator: (value) {
                     if (value == null || value.trim().isEmpty) return 'Please enter your name';
                     if (value.trim().length < 2) return 'Name is too short';
@@ -1050,9 +1166,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
                 const SizedBox(height: 16),
                 TextFormField(
                   controller: _emailController,
-                  style: const TextStyle(color: AppColors.textPrimary),
+                  style: TextStyle(color: context.colors.textPrimary),
                   keyboardType: TextInputType.emailAddress,
-                  decoration: _dec('Email', Icons.email_outlined),
+                  decoration: _dec(context, 'Email', Icons.email_outlined),
                   validator: (value) {
                     if (value == null || value.trim().isEmpty) return 'Please enter your email';
                     final emailRegex = RegExp(r'^[\w.\-]+@([\w\-]+\.)+[\w\-]{2,4}$');
@@ -1063,14 +1179,14 @@ class _SignUpScreenState extends State<SignUpScreen> {
                 const SizedBox(height: 16),
                 TextFormField(
                   controller: _passwordController,
-                  style: const TextStyle(color: AppColors.textPrimary),
+                  style: TextStyle(color: context.colors.textPrimary),
                   obscureText: _obscurePassword,
                   decoration: InputDecoration(
                     hintText: 'Password',
-                    prefixIcon: const Icon(Icons.lock_outline, color: AppColors.textSecondary),
+                    prefixIcon: Icon(Icons.lock_outline, color: context.colors.textSecondary),
                     suffixIcon: IconButton(
                       icon: Icon(_obscurePassword ? Icons.visibility_off : Icons.visibility,
-                          color: AppColors.textSecondary),
+                          color: context.colors.textSecondary),
                       onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                     ),
                   ),
@@ -1083,9 +1199,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
                   initialValue: _selectedGender,
-                  dropdownColor: AppColors.card,
-                  style: const TextStyle(color: AppColors.textPrimary),
-                  decoration: _dec('Gender', Icons.wc_outlined),
+                  dropdownColor: context.colors.card,
+                  style: TextStyle(color: context.colors.textPrimary),
+                  decoration: _dec(context, 'Gender', Icons.wc_outlined),
                   items: const [
                     DropdownMenuItem(value: 'Male', child: Text('Male')),
                     DropdownMenuItem(value: 'Female', child: Text('Female')),
@@ -1096,9 +1212,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
                 const SizedBox(height: 16),
                 TextFormField(
                   controller: _ageController,
-                  style: const TextStyle(color: AppColors.textPrimary),
+                  style: TextStyle(color: context.colors.textPrimary),
                   keyboardType: TextInputType.number,
-                  decoration: _dec('Age', Icons.cake_outlined),
+                  decoration: _dec(context, 'Age', Icons.cake_outlined),
                   validator: (value) {
                     if (value == null || value.trim().isEmpty) return 'Please enter your age';
                     final age = int.tryParse(value.trim());
@@ -1109,15 +1225,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
                 ),
                 const SizedBox(height: 28),
                 auth.isLoading
-                    ? const Center(child: CircularProgressIndicator(color: AppColors.accent))
+                    ? Center(child: CircularProgressIndicator(color: context.colors.accent))
                     : ElevatedButton(
                         onPressed: _handleSignUp,
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          backgroundColor: AppColors.accent,
-                          foregroundColor: AppColors.bg,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                        ),
                         child: const Text('Create Account',
                             style: TextStyle(fontWeight: FontWeight.bold)),
                       ),
@@ -1166,7 +1276,6 @@ class _RootNavState extends State<RootNav> {
   void _loadUserData() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid != null) {
-      // Deferred to after the first frame so Provider is fully wired up.
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         context.read<BmiProvider>().loadHistory(uid);
@@ -1178,13 +1287,10 @@ class _RootNavState extends State<RootNav> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.bg,
+      backgroundColor: context.colors.bg,
       body: IndexedStack(index: _selectedIndex, children: _screens),
       bottomNavigationBar: BottomNavigationBar(
-        backgroundColor: AppColors.card,
         currentIndex: _selectedIndex,
-        selectedItemColor: AppColors.accent,
-        unselectedItemColor: AppColors.textSecondary,
         onTap: (index) => setState(() => _selectedIndex = index),
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.calculate), label: 'Calculator'),
@@ -1204,7 +1310,7 @@ class BmiHomePage extends StatelessWidget {
     final provider = context.watch<BmiProvider>();
 
     return Scaffold(
-      backgroundColor: AppColors.bg,
+      backgroundColor: context.colors.bg,
       appBar: AppBar(
         title: Row(
           children: [
@@ -1212,11 +1318,11 @@ class BmiHomePage extends StatelessWidget {
               width: 28,
               height: 28,
               decoration: BoxDecoration(
-                color: AppColors.accent,
+                color: context.colors.accent,
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Icon(Icons.hourglass_bottom_rounded,
-                  color: AppColors.bg, size: 16),
+              child: Icon(Icons.hourglass_bottom_rounded,
+                  color: context.colors.bg, size: 16),
             ),
             const SizedBox(width: 10),
             const Text('BMI Calculator'),
@@ -1224,7 +1330,7 @@ class BmiHomePage extends StatelessWidget {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.logout, color: AppColors.textSecondary),
+            icon: Icon(Icons.logout, color: context.colors.textSecondary),
             onPressed: () => _performLogout(context),
           ),
         ],
@@ -1259,34 +1365,34 @@ class BmiHomePage extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                color: AppColors.card,
+                color: context.colors.card,
                 borderRadius: BorderRadius.circular(24),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Row(
+                  Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text('Height',
-                          style: TextStyle(color: AppColors.textSecondary, fontSize: 14)),
-                      _UnitPill(label: 'CM'),
+                          style: TextStyle(color: context.colors.textSecondary, fontSize: 14)),
+                      const _UnitPill(label: 'CM'),
                     ],
                   ),
                   const SizedBox(height: 4),
                   Text(
                     provider.height.toStringAsFixed(0),
-                    style: const TextStyle(
-                        color: AppColors.textPrimary,
+                    style: TextStyle(
+                        color: context.colors.textPrimary,
                         fontSize: 44,
                         fontWeight: FontWeight.bold),
                   ),
                   SliderTheme(
                     data: SliderTheme.of(context).copyWith(
-                      activeTrackColor: AppColors.accent,
-                      inactiveTrackColor: AppColors.cardAlt,
-                      thumbColor: AppColors.accent,
-                      overlayColor: AppColors.accent.withValues(alpha: 0.2),
+                      activeTrackColor: context.colors.accent,
+                      inactiveTrackColor: context.colors.cardAlt,
+                      thumbColor: context.colors.accent,
+                      overlayColor: context.colors.accent.withValues(alpha: 0.2),
                     ),
                     child: Slider(
                       min: 100,
@@ -1347,16 +1453,12 @@ class BmiHomePage extends StatelessWidget {
                     );
                   }
                 },
-                icon: const Icon(Icons.refresh, color: AppColors.bg),
-                label: const Text('Calculate',
+                icon: Icon(Icons.refresh, color: context.colors.bg),
+                label: Text('Calculate',
                     style: TextStyle(
-                        color: AppColors.bg,
+                        color: context.colors.bg,
                         fontSize: 18,
                         fontWeight: FontWeight.bold)),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.accent,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                ),
               ),
             ),
           ],
@@ -1387,21 +1489,23 @@ class _GenderCard extends StatelessWidget {
         duration: const Duration(milliseconds: 150),
         padding: const EdgeInsets.symmetric(vertical: 24),
         decoration: BoxDecoration(
-          color: selected ? AppColors.accentDim : AppColors.card,
+          color: selected ? context.colors.accentDim : context.colors.card,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: selected ? AppColors.accent : Colors.transparent,
+            color: selected ? context.colors.accent : Colors.transparent,
             width: 1.5,
           ),
         ),
         child: Column(
           children: [
-            Icon(icon, color: selected ? AppColors.accent : AppColors.textSecondary, size: 30),
+            Icon(icon,
+                color: selected ? context.colors.accent : context.colors.textSecondary,
+                size: 30),
             const SizedBox(height: 8),
             Text(
               label,
               style: TextStyle(
-                color: selected ? AppColors.accent : AppColors.textSecondary,
+                color: selected ? context.colors.accent : context.colors.textSecondary,
                 fontWeight: FontWeight.bold,
                 letterSpacing: 1,
               ),
@@ -1422,13 +1526,13 @@ class _UnitPill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: AppColors.accent,
+        color: context.colors.accent,
         borderRadius: BorderRadius.circular(20),
       ),
       child: Text(
         label,
-        style: const TextStyle(
-            color: AppColors.bg, fontSize: 12, fontWeight: FontWeight.bold),
+        style: TextStyle(
+            color: context.colors.bg, fontSize: 12, fontWeight: FontWeight.bold),
       ),
     );
   }
@@ -1454,28 +1558,28 @@ class _StepperCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: AppColors.card,
+        color: context.colors.card,
         borderRadius: BorderRadius.circular(24),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(color: AppColors.textSecondary, fontSize: 14)),
+          Text(label, style: TextStyle(color: context.colors.textSecondary, fontSize: 14)),
           const SizedBox(height: 10),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               _StepButton(icon: Icons.remove, onTap: onDecrement),
               Text(value,
-                  style: const TextStyle(
-                      color: AppColors.textPrimary,
+                  style: TextStyle(
+                      color: context.colors.textPrimary,
                       fontSize: 24,
                       fontWeight: FontWeight.bold)),
               _StepButton(icon: Icons.add, onTap: onIncrement),
             ],
           ),
           const SizedBox(height: 6),
-          Text(unit, style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+          Text(unit, style: TextStyle(color: context.colors.textSecondary, fontSize: 12)),
         ],
       ),
     );
@@ -1496,10 +1600,10 @@ class _StepButton extends StatelessWidget {
         height: 28,
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: AppColors.accent,
+          color: context.colors.accent,
           borderRadius: BorderRadius.circular(8),
         ),
-        child: Icon(icon, size: 18, color: AppColors.bg),
+        child: Icon(icon, size: 18, color: context.colors.bg),
       ),
     );
   }
@@ -1515,9 +1619,9 @@ class ResultPage extends StatelessWidget {
     return 'Obese';
   }
 
-  Color categoryColor(double bmi) {
+  Color categoryColor(BuildContext context, double bmi) {
     if (bmi < 18.5) return Colors.lightBlueAccent;
-    if (bmi < 25) return AppColors.accent;
+    if (bmi < 25) return context.colors.accent;
     if (bmi <= 30) return Colors.orangeAccent;
     return Colors.redAccent;
   }
@@ -1559,11 +1663,11 @@ class ResultPage extends StatelessWidget {
     final provider = context.watch<BmiProvider>();
     final mealPlanProvider = context.watch<MealPlanProvider>();
     final bmi = provider.bmi ?? 0;
-    final color = categoryColor(bmi);
+    final color = categoryColor(context, bmi);
     final gaugePos = ((bmi - 15) / (35 - 15)).clamp(0.0, 1.0);
 
     return Scaffold(
-      backgroundColor: AppColors.bg,
+      backgroundColor: context.colors.bg,
       appBar: AppBar(
         title: Row(
           children: [
@@ -1571,11 +1675,11 @@ class ResultPage extends StatelessWidget {
               width: 28,
               height: 28,
               decoration: BoxDecoration(
-                color: AppColors.accent,
+                color: context.colors.accent,
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Icon(Icons.hourglass_bottom_rounded,
-                  color: AppColors.bg, size: 16),
+              child: Icon(Icons.hourglass_bottom_rounded,
+                  color: context.colors.bg, size: 16),
             ),
             const SizedBox(width: 10),
             const Text('BMI Calculator'),
@@ -1587,9 +1691,9 @@ class ResultPage extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Result',
+            Text('Result',
                 style: TextStyle(
-                    color: AppColors.textPrimary,
+                    color: context.colors.textPrimary,
                     fontSize: 26,
                     fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
@@ -1597,7 +1701,7 @@ class ResultPage extends StatelessWidget {
               width: double.infinity,
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                color: AppColors.card,
+                color: context.colors.card,
                 borderRadius: BorderRadius.circular(24),
               ),
               child: Column(
@@ -1606,8 +1710,8 @@ class ResultPage extends StatelessWidget {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('Your BMI is',
-                          style: TextStyle(color: AppColors.textSecondary, fontSize: 14)),
+                      Text('Your BMI is',
+                          style: TextStyle(color: context.colors.textSecondary, fontSize: 14)),
                       Text(category(bmi),
                           style: TextStyle(color: color, fontWeight: FontWeight.bold)),
                     ],
@@ -1615,8 +1719,8 @@ class ResultPage extends StatelessWidget {
                   const SizedBox(height: 6),
                   Text(
                     bmi.toStringAsFixed(1),
-                    style: const TextStyle(
-                        color: AppColors.textPrimary,
+                    style: TextStyle(
+                        color: context.colors.textPrimary,
                         fontSize: 44,
                         fontWeight: FontWeight.bold),
                   ),
@@ -1633,7 +1737,7 @@ class ResultPage extends StatelessWidget {
                               borderRadius: BorderRadius.circular(4),
                               gradient: const LinearGradient(colors: [
                                 Colors.lightBlueAccent,
-                                AppColors.accent,
+                                Color.fromARGB(255, 77, 240, 255),
                                 Colors.orangeAccent,
                                 Colors.redAccent,
                               ]),
@@ -1660,13 +1764,13 @@ class ResultPage extends StatelessWidget {
             ),
             const SizedBox(height: 24),
             Text(category(bmi),
-                style: const TextStyle(
-                    color: AppColors.textPrimary,
+                style: TextStyle(
+                    color: context.colors.textPrimary,
                     fontSize: 20,
                     fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
-            const Text('Diet and Nutrition',
-                style: TextStyle(color: AppColors.textSecondary, fontWeight: FontWeight.bold)),
+            Text('Diet and Nutrition',
+                style: TextStyle(color: context.colors.textSecondary, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             ...tips(bmi).map(
               (t) => Padding(
@@ -1674,35 +1778,35 @@ class ResultPage extends StatelessWidget {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('•  ',
-                        style: TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold)),
+                    Text('•  ',
+                        style: TextStyle(color: context.colors.accent, fontWeight: FontWeight.bold)),
                     Expanded(
                       child: Text(t,
-                          style: const TextStyle(color: AppColors.textPrimary, height: 1.4)),
+                          style: TextStyle(color: context.colors.textPrimary, height: 1.4)),
                     ),
                   ],
                 ),
               ),
             ),
             const SizedBox(height: 24),
-            const Text('Suggested Meal Plan',
+            Text('Suggested Meal Plan',
                 style: TextStyle(
-                    color: AppColors.textPrimary,
+                    color: context.colors.textPrimary,
                     fontSize: 20,
                     fontWeight: FontWeight.bold)),
             if (mealPlanProvider.targetCalories != null) ...[
               const SizedBox(height: 4),
               Text(
                 'Target: ${mealPlanProvider.targetCalories!.round()} kcal/day',
-                style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                style: TextStyle(color: context.colors.textSecondary, fontSize: 13),
               ),
             ],
             const SizedBox(height: 12),
             if (mealPlanProvider.isLoading)
-              const Center(
+              Center(
                 child: Padding(
-                  padding: EdgeInsets.symmetric(vertical: 20),
-                  child: CircularProgressIndicator(color: AppColors.accent),
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  child: CircularProgressIndicator(color: context.colors.accent),
                 ),
               )
             else if (mealPlanProvider.errorMessage != null)
@@ -1723,18 +1827,18 @@ class ResultPage extends StatelessWidget {
                             gender: bmiProvider.gender,
                           );
                     },
-                    child: const Text('Retry', style: TextStyle(color: AppColors.accent)),
+                    child: Text('Retry', style: TextStyle(color: context.colors.accent)),
                   ),
                 ],
               )
             else if (mealPlanProvider.plan == null)
-              const Text('No meal plan loaded yet.',
-                  style: TextStyle(color: AppColors.textSecondary))
+              Text('No meal plan loaded yet.',
+                  style: TextStyle(color: context.colors.textSecondary))
             else ...[
               Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: AppColors.cardAlt,
+                  color: context.colors.cardAlt,
                   borderRadius: BorderRadius.circular(16),
                 ),
                 child: Row(
@@ -1763,16 +1867,12 @@ class ResultPage extends StatelessWidget {
               height: 54,
               child: ElevatedButton.icon(
                 onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.refresh, color: AppColors.bg),
-                label: const Text('Re-Calculate',
+                icon: Icon(Icons.refresh, color: context.colors.bg),
+                label: Text('Re-Calculate',
                     style: TextStyle(
-                        color: AppColors.bg,
+                        color: context.colors.bg,
                         fontSize: 18,
                         fontWeight: FontWeight.bold)),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.accent,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                ),
               ),
             ),
           ],
@@ -1792,10 +1892,10 @@ class _NutrientStat extends StatelessWidget {
     return Column(
       children: [
         Text(value,
-            style: const TextStyle(
-                color: AppColors.accent, fontWeight: FontWeight.bold, fontSize: 16)),
+            style: TextStyle(
+                color: context.colors.accent, fontWeight: FontWeight.bold, fontSize: 16)),
         const SizedBox(height: 2),
-        Text(label, style: const TextStyle(color: AppColors.textSecondary, fontSize: 11)),
+        Text(label, style: TextStyle(color: context.colors.textSecondary, fontSize: 11)),
       ],
     );
   }
@@ -1811,7 +1911,7 @@ class _MealCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: AppColors.card,
+        color: context.colors.card,
         borderRadius: BorderRadius.circular(18),
       ),
       child: Row(
@@ -1823,15 +1923,6 @@ class _MealCard extends StatelessWidget {
               width: 60,
               height: 60,
               fit: BoxFit.cover,
-              // Spoonacular's image CDN blocks requests that don't look
-              // like they're coming from a real browser (Dart's default
-              // "Dart/x.x (dart:io)" user-agent gets rejected on mobile).
-              // On Flutter Web this header can't be set at all — browsers
-              // forbid overriding User-Agent for security reasons, and
-              // web has a separate, unrelated problem: Spoonacular's CDN
-              // doesn't send CORS headers, so images will 404/fail to
-              // load in any browser regardless. This only helps on
-              // Android/iOS/desktop native builds.
               headers: kIsWeb
                   ? null
                   : const {
@@ -1842,8 +1933,8 @@ class _MealCard extends StatelessWidget {
               errorBuilder: (_, __, ___) => Container(
                 width: 60,
                 height: 60,
-                color: AppColors.cardAlt,
-                child: const Icon(Icons.restaurant, color: AppColors.textSecondary),
+                color: context.colors.cardAlt,
+                child: Icon(Icons.restaurant, color: context.colors.textSecondary),
               ),
             ),
           ),
@@ -1853,11 +1944,11 @@ class _MealCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(meal.title,
-                    style: const TextStyle(
-                        color: AppColors.textPrimary, fontWeight: FontWeight.w600)),
+                    style: TextStyle(
+                        color: context.colors.textPrimary, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 4),
                 Text('${meal.readyInMinutes} min · ${meal.servings} serving(s)',
-                    style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+                    style: TextStyle(color: context.colors.textSecondary, fontSize: 12)),
               ],
             ),
           ),
@@ -1878,9 +1969,9 @@ class HistoryPage extends StatelessWidget {
 
   String _formatShortDate(DateTime date) => '${date.day}/${date.month}';
 
-  Color _catColor(double bmi) {
+  Color _catColor(BuildContext context, double bmi) {
     if (bmi < 18.5) return Colors.lightBlueAccent;
-    if (bmi < 25) return AppColors.accent;
+    if (bmi < 25) return context.colors.accent;
     if (bmi <= 30) return Colors.orangeAccent;
     return Colors.redAccent;
   }
@@ -1892,23 +1983,41 @@ class HistoryPage extends StatelessWidget {
     final chartHistory = history.reversed.toList(); // oldest first, for the chart
 
     return Scaffold(
-      backgroundColor: AppColors.bg,
+      backgroundColor: context.colors.bg,
       appBar: AppBar(
         title: const Text('BMI History'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.delete_outline, color: AppColors.textSecondary),
+            icon: Icon(Icons.delete_outline, color: context.colors.textSecondary),
             onPressed: history.isEmpty ? null : () => provider.clearHistory(),
             tooltip: 'Clear history',
           ),
         ],
       ),
       body: provider.isLoadingHistory && history.isEmpty
-          ? const Center(child: CircularProgressIndicator(color: AppColors.accent))
+          ? Center(child: CircularProgressIndicator(color: context.colors.accent))
           : history.isEmpty
-              ? const Center(
-                  child: Text('No BMI records yet.',
-                      style: TextStyle(color: AppColors.textSecondary)),
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          provider.historyError ?? 'No BMI records yet.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: context.colors.textSecondary),
+                        ),
+                        if (provider.historyError != null) ...[
+                          const SizedBox(height: 16),
+                          ElevatedButton(
+                            onPressed: provider.retryLoadHistory,
+                            child: const Text('Retry'),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
                 )
               : ListView(
                   padding: const EdgeInsets.all(16),
@@ -1918,12 +2027,12 @@ class HistoryPage extends StatelessWidget {
                       const SizedBox(height: 20),
                     ],
                     ...history.map((record) {
-                      final color = _catColor(record.bmi);
+                      final color = _catColor(context, record.bmi);
                       return Container(
                         margin: const EdgeInsets.only(bottom: 12),
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
-                          color: AppColors.card,
+                          color: context.colors.card,
                           borderRadius: BorderRadius.circular(18),
                         ),
                         child: Row(
@@ -1948,14 +2057,14 @@ class HistoryPage extends StatelessWidget {
                                 children: [
                                   Text(
                                     '${record.gender} · ${record.height.toStringAsFixed(0)}cm · ${record.weight.toStringAsFixed(0)}kg',
-                                    style: const TextStyle(
-                                        color: AppColors.textPrimary,
+                                    style: TextStyle(
+                                        color: context.colors.textPrimary,
                                         fontWeight: FontWeight.w600),
                                   ),
                                   const SizedBox(height: 4),
                                   Text(_formatDate(record.date),
-                                      style: const TextStyle(
-                                          color: AppColors.textSecondary, fontSize: 12)),
+                                      style: TextStyle(
+                                          color: context.colors.textSecondary, fontSize: 12)),
                                 ],
                               ),
                             ),
@@ -1975,9 +2084,9 @@ class _BmiChart extends StatelessWidget {
 
   const _BmiChart({required this.history, required this.formatDate});
 
-  Color _zoneColor(double bmi) {
+  Color _zoneColor(BuildContext context, double bmi) {
     if (bmi < 18.5) return Colors.lightBlueAccent;
-    if (bmi < 25) return AppColors.accent;
+    if (bmi < 25) return context.colors.accent;
     if (bmi <= 30) return Colors.orangeAccent;
     return Colors.redAccent;
   }
@@ -1993,15 +2102,15 @@ class _BmiChart extends StatelessWidget {
 
     return Container(
       padding: const EdgeInsets.fromLTRB(8, 20, 20, 12),
-      decoration: BoxDecoration(color: AppColors.card, borderRadius: BorderRadius.circular(24)),
+      decoration: BoxDecoration(color: context.colors.card, borderRadius: BorderRadius.circular(24)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Padding(
-            padding: EdgeInsets.only(left: 12, bottom: 12),
+          Padding(
+            padding: const EdgeInsets.only(left: 12, bottom: 12),
             child: Text('BMI Trend',
                 style: TextStyle(
-                    color: AppColors.textPrimary, fontSize: 16, fontWeight: FontWeight.bold)),
+                    color: context.colors.textPrimary, fontSize: 16, fontWeight: FontWeight.bold)),
           ),
           SizedBox(
             height: 220,
@@ -2024,7 +2133,7 @@ class _BmiChart extends StatelessWidget {
                     HorizontalRangeAnnotation(
                       y1: 18.5,
                       y2: 25,
-                      color: AppColors.accent.withValues(alpha: 0.10),
+                      color: context.colors.accent.withValues(alpha: 0.10),
                     ),
                     HorizontalRangeAnnotation(
                       y1: 25,
@@ -2049,7 +2158,7 @@ class _BmiChart extends StatelessWidget {
                       interval: 5,
                       getTitlesWidget: (value, meta) => Text(
                         value.toStringAsFixed(0),
-                        style: const TextStyle(color: AppColors.textSecondary, fontSize: 10),
+                        style: TextStyle(color: context.colors.textSecondary, fontSize: 10),
                       ),
                     ),
                   ),
@@ -2065,7 +2174,7 @@ class _BmiChart extends StatelessWidget {
                           padding: const EdgeInsets.only(top: 6),
                           child: Text(
                             formatDate(history[i].date),
-                            style: const TextStyle(color: AppColors.textSecondary, fontSize: 10),
+                            style: TextStyle(color: context.colors.textSecondary, fontSize: 10),
                           ),
                         );
                       },
@@ -2074,13 +2183,13 @@ class _BmiChart extends StatelessWidget {
                 ),
                 lineTouchData: LineTouchData(
                   touchTooltipData: LineTouchTooltipData(
-                    getTooltipColor: (_) => AppColors.cardAlt,
+                    getTooltipColor: (_) => context.colors.cardAlt,
                     getTooltipItems: (spots) => spots.map((s) {
                       final record = history[s.x.round()];
                       return LineTooltipItem(
                         '${record.bmi.toStringAsFixed(1)}\n${formatDate(record.date)}',
-                        const TextStyle(
-                            color: AppColors.textPrimary, fontWeight: FontWeight.bold),
+                        TextStyle(
+                            color: context.colors.textPrimary, fontWeight: FontWeight.bold),
                       );
                     }).toList(),
                   ),
@@ -2089,15 +2198,15 @@ class _BmiChart extends StatelessWidget {
                   LineChartBarData(
                     spots: spots,
                     isCurved: true,
-                    color: AppColors.accent,
+                    color: context.colors.accent,
                     barWidth: 2.5,
                     dotData: FlDotData(
                       show: true,
                       getDotPainter: (spot, percent, bar, index) => FlDotCirclePainter(
                         radius: 4,
-                        color: _zoneColor(spot.y),
+                        color: _zoneColor(context, spot.y),
                         strokeWidth: 2,
-                        strokeColor: AppColors.card,
+                        strokeColor: context.colors.card,
                       ),
                     ),
                     belowBarData: BarAreaData(show: false),
@@ -2107,14 +2216,14 @@ class _BmiChart extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
-          const Wrap(
+          Wrap(
             spacing: 14,
             runSpacing: 6,
             children: [
-              _LegendDot(color: Colors.lightBlueAccent, label: 'Underweight'),
-              _LegendDot(color: AppColors.accent, label: 'Normal'),
-              _LegendDot(color: Colors.orangeAccent, label: 'Overweight'),
-              _LegendDot(color: Colors.redAccent, label: 'Obese'),
+              const _LegendDot(color: Colors.lightBlueAccent, label: 'Underweight'),
+              _LegendDot(color: context.colors.accent, label: 'Normal'),
+              const _LegendDot(color: Colors.orangeAccent, label: 'Overweight'),
+              const _LegendDot(color: Colors.redAccent, label: 'Obese'),
             ],
           ),
         ],
@@ -2136,7 +2245,7 @@ class _LegendDot extends StatelessWidget {
         Container(
             width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
         const SizedBox(width: 6),
-        Text(label, style: const TextStyle(color: AppColors.textSecondary, fontSize: 11)),
+        Text(label, style: TextStyle(color: context.colors.textSecondary, fontSize: 11)),
       ],
     );
   }
@@ -2193,7 +2302,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void _showImageSourceSheet() {
     showModalBottomSheet(
       context: context,
-      backgroundColor: AppColors.card,
+      backgroundColor: context.colors.card,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -2202,14 +2311,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.photo_library_outlined, color: AppColors.accent),
-              title: const Text('Choose from Gallery',
-                  style: TextStyle(color: AppColors.textPrimary)),
+              leading: Icon(Icons.photo_library_outlined, color: context.colors.accent),
+              title: Text('Choose from Gallery',
+                  style: TextStyle(color: context.colors.textPrimary)),
               onTap: () => _pickImage(ImageSource.gallery),
             ),
             ListTile(
-              leading: const Icon(Icons.camera_alt_outlined, color: AppColors.accent),
-              title: const Text('Take a Photo', style: TextStyle(color: AppColors.textPrimary)),
+              leading: Icon(Icons.camera_alt_outlined, color: context.colors.accent),
+              title: Text('Take a Photo', style: TextStyle(color: context.colors.textPrimary)),
               onTap: () => _pickImage(ImageSource.camera),
             ),
           ],
@@ -2218,27 +2327,58 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  /// Saves the edited profile. If a new photo was picked, it's uploaded
+  /// to Firebase Storage first (at `profile_images/{uid}.jpg`) and the
+  /// resulting download URL is what gets written to Firestore alongside
+  /// the rest of the profile fields.
   Future<void> _saveChanges() async {
     if (!_formKey.currentState!.validate()) return;
     final provider = context.read<UserProfileProvider>();
     final currentProfile = provider.profile!;
+    final uid = FirebaseAuth.instance.currentUser?.uid;
 
-    // NOTE: image upload to Firebase Storage is disabled for now (requires
-    // the Blaze billing plan). The picked image is only shown as a local
-    // preview in this screen/session — it is not uploaded or saved to
-    // Firestore, so it will reset to the previous photo (or the initial
-    // avatar letter) next time the profile is loaded.
+    if (!await hasInternetConnection()) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No internet connection. Please try again once online.')),
+        );
+      }
+      return;
+    }
+
+    String? photoUrl = currentProfile.photoUrl;
+
+    if (_pickedImageBytes != null && uid != null) {
+      try {
+        final ref = FirebaseStorage.instance.ref('profile_images/$uid.jpg');
+        await ref
+            .putData(_pickedImageBytes!, SettableMetadata(contentType: 'image/jpeg'))
+            .timeout(const Duration(seconds: 30));
+        photoUrl = await ref.getDownloadURL();
+      } catch (e) {
+        // ignore: avoid_print
+        print('Profile image upload failed: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Image upload failed. Saving other changes.')),
+          );
+        }
+      }
+    }
+
     final updated = UserProfile(
       name: _nameController!.text.trim(),
       email: currentProfile.email,
       gender: _selectedGender ?? 'Other',
       age: int.parse(_ageController!.text.trim()),
-      photoUrl: currentProfile.photoUrl,
+      photoUrl: photoUrl,
     );
     final success = await provider.AddFireStore(updated);
     if (success && mounted) {
       setState(() {
         _isEditing = false;
+        _pickedImage = null;
+        _pickedImageBytes = null;
       });
     } else if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2269,7 +2409,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           height: 84,
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: AppColors.accent,
+            color: context.colors.accent,
             shape: BoxShape.circle,
             image: imageProvider != null
                 ? DecorationImage(image: imageProvider, fit: BoxFit.cover)
@@ -2278,8 +2418,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
           child: imageProvider == null
               ? Text(
                   profile.name.isNotEmpty ? profile.name[0].toUpperCase() : '?',
-                  style: const TextStyle(
-                      color: AppColors.bg, fontSize: 32, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                      color: context.colors.bg, fontSize: 32, fontWeight: FontWeight.bold),
                 )
               : null,
         ),
@@ -2294,15 +2434,37 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 height: 28,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  color: AppColors.cardAlt,
+                  color: context.colors.cardAlt,
                   shape: BoxShape.circle,
-                  border: Border.all(color: AppColors.bg, width: 2),
+                  border: Border.all(color: context.colors.bg, width: 2),
                 ),
-                child: const Icon(Icons.camera_alt, size: 14, color: AppColors.accent),
+                child: Icon(Icons.camera_alt, size: 14, color: context.colors.accent),
               ),
             ),
           ),
       ],
+    );
+  }
+
+  /// Light/Dark toggle. Reads and writes ThemeProvider, which persists
+  /// the choice via shared_preferences.
+  Widget _buildThemeToggle() {
+    final theme = context.watch<ThemeProvider>();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      decoration: BoxDecoration(
+        color: context.colors.card,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: SwitchListTile(
+        title: Text('Dark Mode', style: TextStyle(color: context.colors.textPrimary)),
+        secondary: Icon(
+          theme.isDarkMode ? Icons.dark_mode_outlined : Icons.light_mode_outlined,
+          color: context.colors.textSecondary,
+        ),
+        value: theme.isDarkMode,
+        onChanged: (value) => context.read<ThemeProvider>().setDarkMode(value),
+      ),
     );
   }
 
@@ -2312,26 +2474,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final profile = profileProvider.profile;
 
     return Scaffold(
-      backgroundColor: AppColors.bg,
+      backgroundColor: context.colors.bg,
       appBar: AppBar(
         title: const Text('Profile'),
         actions: [
           if (!_isEditing && profile != null)
             IconButton(
-              icon: const Icon(Icons.edit_outlined, color: AppColors.textSecondary),
+              icon: Icon(Icons.edit_outlined, color: context.colors.textSecondary),
               onPressed: () => _startEditing(profile),
             ),
         ],
       ),
-      // FIX: previously, if loadProfile() failed (bad rules, offline,
-      // or a missing doc that wasn't self-healed) this screen just
-      // showed "No profile data found." with zero way to recover short
-      // of restarting the app. It now shows a spinner only while
-      // isLoading is actually true, and always gives a visible Retry
-      // button once loading finishes with no profile — so it can never
-      // look "stuck buffering forever" with no way out.
       body: profileProvider.isLoading && profile == null
-          ? const Center(child: CircularProgressIndicator(color: AppColors.accent))
+          ? Center(child: CircularProgressIndicator(color: context.colors.accent))
           : profile == null
               ? Center(
                   child: Column(
@@ -2340,15 +2495,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       Text(
                         profileProvider.errorMessage ?? 'No profile data found.',
                         textAlign: TextAlign.center,
-                        style: const TextStyle(color: AppColors.textSecondary),
+                        style: TextStyle(color: context.colors.textSecondary),
                       ),
                       const SizedBox(height: 16),
                       ElevatedButton(
                         onPressed: _retryLoad,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.accent,
-                          foregroundColor: AppColors.bg,
-                        ),
                         child: const Text('Retry'),
                       ),
                     ],
@@ -2360,7 +2511,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Center(child: _buildAvatar(profile)),
-                      const SizedBox(height: 28),
+                      const SizedBox(height: 20),
+                      _buildThemeToggle(),
+                      const SizedBox(height: 20),
                       _isEditing
                           ? _buildEditForm(profile, profileProvider)
                           : _buildReadOnlyView(profile),
@@ -2375,8 +2528,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   color: Colors.redAccent, fontWeight: FontWeight.bold)),
                           style: OutlinedButton.styleFrom(
                             side: const BorderSide(color: Colors.redAccent),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(30)),
                           ),
                         ),
                       ),
@@ -2409,10 +2560,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
         children: [
           TextFormField(
             controller: _nameController,
-            style: const TextStyle(color: AppColors.textPrimary),
-            decoration: const InputDecoration(
+            style: TextStyle(color: context.colors.textPrimary),
+            decoration: InputDecoration(
               hintText: 'Full Name',
-              prefixIcon: Icon(Icons.person_outline, color: AppColors.textSecondary),
+              prefixIcon: Icon(Icons.person_outline, color: context.colors.textSecondary),
             ),
             validator: (value) {
               if (value == null || value.trim().isEmpty) return 'Please enter your name';
@@ -2420,17 +2571,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
             },
           ),
           const SizedBox(height: 16),
-          // Email is tied to the FirebaseAuth account and isn't editable
-          // here — changing it would require re-authentication.
           _ProfileField(label: 'Email', value: profile.email, icon: Icons.email_outlined),
           const SizedBox(height: 16),
           DropdownButtonFormField<String>(
             initialValue: _selectedGender,
-            dropdownColor: AppColors.card,
-            style: const TextStyle(color: AppColors.textPrimary),
-            decoration: const InputDecoration(
+            dropdownColor: context.colors.card,
+            style: TextStyle(color: context.colors.textPrimary),
+            decoration: InputDecoration(
               hintText: 'Gender',
-              prefixIcon: Icon(Icons.wc_outlined, color: AppColors.textSecondary),
+              prefixIcon: Icon(Icons.wc_outlined, color: context.colors.textSecondary),
             ),
             items: const [
               DropdownMenuItem(value: 'Male', child: Text('Male')),
@@ -2442,11 +2591,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
           const SizedBox(height: 16),
           TextFormField(
             controller: _ageController,
-            style: const TextStyle(color: AppColors.textPrimary),
+            style: TextStyle(color: context.colors.textPrimary),
             keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               hintText: 'Age',
-              prefixIcon: Icon(Icons.cake_outlined, color: AppColors.textSecondary),
+              prefixIcon: Icon(Icons.cake_outlined, color: context.colors.textSecondary),
             ),
             validator: (value) {
               if (value == null || value.trim().isEmpty) return 'Please enter your age';
@@ -2466,26 +2615,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     _pickedImage = null;
                     _pickedImageBytes = null;
                   }),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    side: const BorderSide(color: AppColors.textSecondary),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                  ),
-                  child: const Text('Cancel', style: TextStyle(color: AppColors.textSecondary)),
+                  child: const Text('Cancel'),
                 ),
               ),
               const SizedBox(width: 14),
               Expanded(
                 child: profileProvider.isLoading
-                    ? const Center(child: CircularProgressIndicator(color: AppColors.accent))
+                    ? Center(child: CircularProgressIndicator(color: context.colors.accent))
                     : ElevatedButton(
                         onPressed: _saveChanges,
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          backgroundColor: AppColors.accent,
-                          foregroundColor: AppColors.bg,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                        ),
                         child: const Text('Save', style: TextStyle(fontWeight: FontWeight.bold)),
                       ),
               ),
@@ -2509,22 +2647,22 @@ class _ProfileField extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: AppColors.card,
+        color: context.colors.card,
         borderRadius: BorderRadius.circular(18),
       ),
       child: Row(
         children: [
-          Icon(icon, color: AppColors.textSecondary, size: 20),
+          Icon(icon, color: context.colors.textSecondary, size: 20),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(label, style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+                Text(label, style: TextStyle(color: context.colors.textSecondary, fontSize: 12)),
                 const SizedBox(height: 2),
                 Text(value,
-                    style: const TextStyle(
-                        color: AppColors.textPrimary, fontWeight: FontWeight.w600)),
+                    style: TextStyle(
+                        color: context.colors.textPrimary, fontWeight: FontWeight.w600)),
               ],
             ),
           ),

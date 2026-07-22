@@ -14,6 +14,7 @@ import 'package:http/http.dart' as http;
 import 'firebase_options.dart';
 import 'theme.dart';
 import 'connectivity_service.dart';
+import 'unit_provider.dart';
 
 /// Retries a Firestore operation with exponential backoff (1s, 2s, 4s)
 /// when it fails with a transient `unavailable` error. Any other
@@ -56,18 +57,33 @@ Future<void> main() async {
   final themeProvider = ThemeProvider();
   await themeProvider.loadSavedTheme();
 
+  // Load the user's saved Metric/Imperial choice before the first frame
+  // for the same reason.
+  final unitProvider = UnitProvider();
+  await unitProvider.loadSavedUnit();
+
   // Prime the connectivity status before the first frame so the offline
   // banner is correct immediately, instead of assuming "online" for a beat.
   final connectivityProvider = ConnectivityProvider();
   await connectivityProvider.initialize();
 
-  runApp(MyApp(themeProvider: themeProvider, connectivityProvider: connectivityProvider));
+  runApp(MyApp(
+    themeProvider: themeProvider,
+    connectivityProvider: connectivityProvider,
+    unitProvider: unitProvider,
+  ));
 }
 
 class MyApp extends StatelessWidget {
   final ThemeProvider themeProvider;
   final ConnectivityProvider connectivityProvider;
-  const MyApp({super.key, required this.themeProvider, required this.connectivityProvider});
+  final UnitProvider unitProvider;
+  const MyApp({
+    super.key,
+    required this.themeProvider,
+    required this.connectivityProvider,
+    required this.unitProvider,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -79,6 +95,7 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => UserProfileProvider()),
         ChangeNotifierProvider.value(value: themeProvider),
         ChangeNotifierProvider.value(value: connectivityProvider),
+        ChangeNotifierProvider.value(value: unitProvider),
       ],
       child: Consumer<ThemeProvider>(
         builder: (context, theme, _) => MaterialApp(
@@ -281,6 +298,11 @@ class BmiRecord {
 class BmiProvider extends ChangeNotifier {
   double? bmi;
   String gender = 'Male';
+  // NOTE: height/weight are always stored canonically in cm/kg here,
+  // regardless of which unit the user has selected in the UI. This
+  // keeps BMI math, Firestore history, and the chart all unit-agnostic.
+  // Conversion to/from the display unit happens only in the widgets
+  // (see UnitConversions in unit_provider.dart).
   double height = 170;
   double weight = 65;
   int age = 25;
@@ -392,11 +414,15 @@ class BmiProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// [h] is always in cm — convert before calling this if the UI is in
+  /// imperial mode (see UnitConversions.inchesToCm).
   void setHeight(double h) {
     height = h;
     notifyListeners();
   }
 
+  /// [w] is always in kg — convert before calling this if the UI is in
+  /// imperial mode (see UnitConversions.lbsToKg).
   void setWeight(double w) {
     weight = w.clamp(20, 250);
     notifyListeners();
@@ -1308,6 +1334,7 @@ class BmiHomePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<BmiProvider>();
+    final unit = context.watch<UnitProvider>();
 
     return Scaffold(
       backgroundColor: context.colors.bg,
@@ -1362,6 +1389,11 @@ class BmiHomePage extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 16),
+            // Metric / Imperial switch — flips how height & weight are
+            // displayed and entered below. The underlying BmiProvider
+            // values stay in cm/kg no matter which is selected.
+            const _UnitSwitch(),
+            const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
@@ -1376,12 +1408,12 @@ class BmiHomePage extends StatelessWidget {
                     children: [
                       Text('Height',
                           style: TextStyle(color: context.colors.textSecondary, fontSize: 14)),
-                      const _UnitPill(label: 'CM'),
+                      _UnitPill(label: unit.isImperial ? 'FT/IN' : 'CM'),
                     ],
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    provider.height.toStringAsFixed(0),
+                    UnitConversions.formatHeight(provider.height, unit.isImperial),
                     style: TextStyle(
                         color: context.colors.textPrimary,
                         fontSize: 44,
@@ -1394,12 +1426,22 @@ class BmiHomePage extends StatelessWidget {
                       thumbColor: context.colors.accent,
                       overlayColor: context.colors.accent.withValues(alpha: 0.2),
                     ),
-                    child: Slider(
-                      min: 100,
-                      max: 220,
-                      value: provider.height.clamp(100, 220),
-                      onChanged: (v) => context.read<BmiProvider>().setHeight(v),
-                    ),
+                    child: unit.isImperial
+                        ? Slider(
+                            // 39–87 inches ≈ 100–220 cm, matching the metric range.
+                            min: 39,
+                            max: 87,
+                            value: UnitConversions.cmToInches(provider.height).clamp(39, 87),
+                            onChanged: (v) => context
+                                .read<BmiProvider>()
+                                .setHeight(UnitConversions.inchesToCm(v)),
+                          )
+                        : Slider(
+                            min: 100,
+                            max: 220,
+                            value: provider.height.clamp(100, 220),
+                            onChanged: (v) => context.read<BmiProvider>().setHeight(v),
+                          ),
                   ),
                 ],
               ),
@@ -1410,12 +1452,32 @@ class BmiHomePage extends StatelessWidget {
                 Expanded(
                   child: _StepperCard(
                     label: 'Weight',
-                    unit: 'kg',
-                    value: provider.weight.toStringAsFixed(0),
-                    onIncrement: () =>
-                        context.read<BmiProvider>().setWeight(provider.weight + 1),
-                    onDecrement: () =>
-                        context.read<BmiProvider>().setWeight(provider.weight - 1),
+                    unit: unit.isImperial ? 'lbs' : 'kg',
+                    value: unit.isImperial
+                        ? UnitConversions.kgToLbs(provider.weight).round().toString()
+                        : provider.weight.toStringAsFixed(0),
+                    onIncrement: () {
+                      if (unit.isImperial) {
+                        final newLbs =
+                            UnitConversions.kgToLbs(provider.weight).round() + 1;
+                        context
+                            .read<BmiProvider>()
+                            .setWeight(UnitConversions.lbsToKg(newLbs.toDouble()));
+                      } else {
+                        context.read<BmiProvider>().setWeight(provider.weight + 1);
+                      }
+                    },
+                    onDecrement: () {
+                      if (unit.isImperial) {
+                        final newLbs =
+                            UnitConversions.kgToLbs(provider.weight).round() - 1;
+                        context
+                            .read<BmiProvider>()
+                            .setWeight(UnitConversions.lbsToKg(newLbs.toDouble()));
+                      } else {
+                        context.read<BmiProvider>().setWeight(provider.weight - 1);
+                      }
+                    },
                   ),
                 ),
                 const SizedBox(width: 14),
@@ -1462,6 +1524,77 @@ class BmiHomePage extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Segmented Metric / Imperial toggle shown at the top of the Calculator
+/// screen. Persists via UnitProvider (shared_preferences under the hood).
+class _UnitSwitch extends StatelessWidget {
+  const _UnitSwitch();
+
+  @override
+  Widget build(BuildContext context) {
+    final unit = context.watch<UnitProvider>();
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: context.colors.card,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _UnitSwitchButton(
+              label: 'Metric',
+              selected: !unit.isImperial,
+              onTap: () => context.read<UnitProvider>().setImperial(false),
+            ),
+          ),
+          Expanded(
+            child: _UnitSwitchButton(
+              label: 'Imperial',
+              selected: unit.isImperial,
+              onTap: () => context.read<UnitProvider>().setImperial(true),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UnitSwitchButton extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  const _UnitSwitchButton({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected ? context.colors.accent : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? context.colors.bg : context.colors.textSecondary,
+            fontWeight: FontWeight.bold,
+            fontSize: 13,
+          ),
         ),
       ),
     );
@@ -1979,6 +2112,7 @@ class HistoryPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<BmiProvider>();
+    final unit = context.watch<UnitProvider>();
     final history = provider.history; // newest first
     final chartHistory = history.reversed.toList(); // oldest first, for the chart
 
@@ -2028,6 +2162,12 @@ class HistoryPage extends StatelessWidget {
                     ],
                     ...history.map((record) {
                       final color = _catColor(context, record.bmi);
+                      // Records are always stored in cm/kg; format them in
+                      // whichever unit the user currently has selected.
+                      final heightLabel =
+                          UnitConversions.formatHeight(record.height, unit.isImperial);
+                      final weightLabel =
+                          UnitConversions.formatWeight(record.weight, unit.isImperial);
                       return Container(
                         margin: const EdgeInsets.only(bottom: 12),
                         padding: const EdgeInsets.all(14),
@@ -2056,7 +2196,7 @@ class HistoryPage extends StatelessWidget {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    '${record.gender} · ${record.height.toStringAsFixed(0)}cm · ${record.weight.toStringAsFixed(0)}kg',
+                                    '${record.gender} · $heightLabel · $weightLabel',
                                     style: TextStyle(
                                         color: context.colors.textPrimary,
                                         fontWeight: FontWeight.w600),

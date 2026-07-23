@@ -747,6 +747,48 @@ class AuthProvider extends ChangeNotifier {
     await _auth.signOut();
   }
 
+  /// Sends a Firebase Auth password-reset email to [email]. Returns true
+  /// if the request succeeded (Firebase always returns success here even
+  /// if the email isn't registered, to avoid leaking which emails have
+  /// accounts — the `user-not-found` case below only fires in rarer setups
+  /// where email enumeration protection is disabled).
+  Future<bool> sendPasswordResetEmail(String email) async {
+    isLoading = true;
+    errorMessage = null;
+    notifyListeners();
+
+    if (!await hasInternetConnection()) {
+      errorMessage = 'No internet connection. Please check your network and try again.';
+      isLoading = false;
+      notifyListeners();
+      return false;
+    }
+
+    try {
+      await _auth.sendPasswordResetEmail(email: email).timeout(const Duration(seconds: 15));
+      isLoading = false;
+      notifyListeners();
+      return true;
+    } on TimeoutException {
+      errorMessage = 'Request timed out. Please check your connection and try again.';
+      isLoading = false;
+      notifyListeners();
+      return false;
+    } on FirebaseAuthException catch (e) {
+      errorMessage = _mapError(e.code);
+      isLoading = false;
+      notifyListeners();
+      return false;
+    } catch (e) {
+      // ignore: avoid_print
+      print('sendPasswordResetEmail failed: $e');
+      errorMessage = 'Something went wrong. Please check your connection and try again.';
+      isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
   String _mapError(String code) {
     switch (code) {
       case 'invalid-email':
@@ -1064,7 +1106,22 @@ class _LoginScreenState extends State<LoginScreen> {
                       return null;
                     },
                   ),
-                  const SizedBox(height: 28),
+                  const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const ForgotPasswordScreen()),
+                        );
+                      },
+                      child: Text(
+                        'Forgot Password?',
+                        style: TextStyle(color: context.colors.accent),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
                   auth.isLoading
                       ? Center(
                           child: CircularProgressIndicator(color: context.colors.accent))
@@ -1258,6 +1315,149 @@ class _SignUpScreenState extends State<SignUpScreen> {
                             style: TextStyle(fontWeight: FontWeight.bold)),
                       ),
               ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Screen where a user can request a password-reset email via Firebase
+/// Auth. Reached from the "Forgot Password?" link on the Login screen.
+class ForgotPasswordScreen extends StatefulWidget {
+  const ForgotPasswordScreen({super.key});
+
+  @override
+  State<ForgotPasswordScreen> createState() => _ForgotPasswordScreenState();
+}
+
+class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _emailController = TextEditingController();
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _handleSendResetEmail() async {
+    if (!_formKey.currentState!.validate()) return;
+    final auth = context.read<AuthProvider>();
+    final success = await auth.sendPasswordResetEmail(_emailController.text.trim());
+    if (!mounted) return;
+
+    if (success) {
+      // Confirm the email was sent, then head back to the Login screen.
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          backgroundColor: context.colors.card,
+          title: Text('Check your email', style: TextStyle(color: context.colors.textPrimary)),
+          content: Text(
+            'A password reset link has been sent to ${_emailController.text.trim()}. '
+            'Follow the instructions in that email to choose a new password.',
+            style: TextStyle(color: context.colors.textSecondary),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: Text('OK', style: TextStyle(color: context.colors.accent)),
+            ),
+          ],
+        ),
+      );
+      if (mounted) Navigator.of(context).pop(); // back to Login screen
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(auth.errorMessage ?? 'Could not send reset email')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final auth = context.watch<AuthProvider>();
+    return Scaffold(
+      backgroundColor: context.colors.bg,
+      appBar: AppBar(
+        title: const Text('Forgot Password'),
+      ),
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 28),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const SizedBox(height: 24),
+                  Container(
+                    width: 64,
+                    height: 64,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: context.colors.accent,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Icon(Icons.mail_lock_outlined, color: context.colors.bg, size: 30),
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    'Reset Your Password',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: context.colors.textPrimary),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    "Enter the email associated with your account and we'll send a link to reset your password.",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: context.colors.textSecondary, height: 1.4),
+                  ),
+                  const SizedBox(height: 28),
+                  TextFormField(
+                    controller: _emailController,
+                    style: TextStyle(color: context.colors.textPrimary),
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: InputDecoration(
+                      hintText: 'Email',
+                      prefixIcon: Icon(Icons.email_outlined, color: context.colors.textSecondary),
+                    ),
+                    validator: (value) {
+                      if (value == null || value.trim().isEmpty) {
+                        return 'Please enter your email';
+                      }
+                      final emailRegex = RegExp(r'^[\w.\-]+@([\w\-]+\.)+[\w\-]{2,4}$');
+                      if (!emailRegex.hasMatch(value.trim())) {
+                        return 'Enter a valid email address';
+                      }
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 28),
+                  auth.isLoading
+                      ? Center(
+                          child: CircularProgressIndicator(color: context.colors.accent))
+                      : ElevatedButton(
+                          onPressed: _handleSendResetEmail,
+                          child: const Text('Send Reset Link',
+                              style: TextStyle(fontWeight: FontWeight.bold)),
+                        ),
+                  const SizedBox(height: 16),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: Text(
+                      'Back to Login',
+                      style: TextStyle(color: context.colors.accent),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
